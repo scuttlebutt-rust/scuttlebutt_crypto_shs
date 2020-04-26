@@ -81,4 +81,44 @@ namespace Scuttlebutt.Crypto.SHS
             return Tuple.Create(shared_secret, msg);
         }
     }
+
+    public class Server
+    {
+        private readonly byte[] _network_key;
+        private byte[] _ephemeral_server_key;
+
+        /// <summary>Constructs the server given</summary>
+        /// <param name="network_key">
+        /// The key that identifies the network
+        /// </param>
+        Server(byte[] network_key)
+        {
+            this._network_key = network_key;
+        }
+
+        /// <summary>
+        ///   The response to a client hello
+        /// </summary>
+        public byte[] AcceptHello(byte[] msg)
+        {
+            var client_key_length = msg.Length - 256/8;
+            var ephemeral_client_key = new byte[client_key_length];
+            Buffer.BlockCopy(msg, 0, ephemeral_client_key, 0, client_key_length);
+            return ephemeral_client_key;
+        }
+
+        public Tuple<byte[], byte[]> Hello(byte[] ephemeral_client_key)
+        {
+            _ephemeral_server_key = SecretKeyAuth.GenerateKey();
+            var signing_key = ScalarMult.Mult(ephemeral_client_key, _ephemeral_server_key);
+            var signed_key = SecretKeyAuth.Sign(_ephemeral_server_key, signing_key);
+
+            return Tuple.Create(_ephemeral_server_key, signed_key);
+        }
+
+        public byte[] Authenticate()
+        {
+            return new byte[8];
+        }
+    }
 }
