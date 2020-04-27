@@ -84,8 +84,31 @@ namespace Scuttlebutt.Crypto.SHS
 
     public class Server
     {
+        /// <summary>
+        ///   The server's epehemeral key
+        /// </summary>
+        public byte[] EphemeralServerKey
+        {
+            get
+            {
+                return _ephemeral_server_pk;
+            }
+        }
+        /// <summary>
+        ///   The client's epehemeral key
+        /// </summary>
+        public byte[] EphemeralClientKey
+        {
+            get
+            {
+                return _ephemeral_client_pk;
+            }
+        }
+
+        private const int SECTION_LENGTH = 32;
         private readonly byte[] _network_key;
-        private byte[] _ephemeral_server_key;
+        private byte[] _ephemeral_server_pk;
+        private byte[] _ephemeral_client_pk;
 
         /// <summary>Constructs the server given</summary>
         /// <param name="network_key">
@@ -94,26 +117,77 @@ namespace Scuttlebutt.Crypto.SHS
         Server(byte[] network_key)
         {
             this._network_key = network_key;
+            _ephemeral_server_pk = SecretKeyAuth.GenerateKey();
         }
 
         /// <summary>
-        ///   The response to a client hello
+        ///   Validate client Hello
         /// </summary>
-        public byte[] AcceptHello(byte[] msg)
+        /// <remark>
+        ///   Here the server verifies that the received message length is 64
+        ///   bytes, then extracts the client's ephemeral key and also verifies
+        ///   that the hmac was signed with the network key.
+        ///
+        ///   This sets the object's <see cref="">_client_ephemeral_key</see>
+        /// </remark>
+        /// <exception cref="ArgumentException">
+        ///   Thrown if the client Hello <paramref name="msg"/> fails to pass the
+        ///   checks.
+        /// </exception>
+        /// <param name="msg">
+        ///   The received message, the first 32 bytes correspond to the client
+        ///   ephemeral key and the last 32 bytes to the hmac.
+        /// </param>
+        public void AcceptHello(byte[] msg)
         {
-            var client_key_length = msg.Length - 256/8;
-            var ephemeral_client_key = new byte[client_key_length];
-            Buffer.BlockCopy(msg, 0, ephemeral_client_key, 0, client_key_length);
-            return ephemeral_client_key;
+            if (msg.Length != 64)
+            {
+                throw new ArgumentException("The received message is not 64 bytes");
+            }
+
+            // Separate the message in ephemeral key and hmac
+            var ephemeral_client_key = new byte[SECTION_LENGTH];
+            Buffer.BlockCopy(msg, 0, ephemeral_client_key, 0, SECTION_LENGTH);
+            var hmac = new byte[SECTION_LENGTH];
+            Buffer.BlockCopy(msg, 0, hmac, 0, SECTION_LENGTH);
+
+            // Check if the key used to sign the hmac of the ephemeral_client_key is
+            // valid
+            //
+            // Aka, check if we are in the same network
+            if (!SecretKeyAuth.Verify(ephemeral_client_key, hmac, _network_key))
+            {
+                throw new ArgumentException("The hmac does not match");
+            }
+            else
+            {
+                this._ephemeral_client_pk = ephemeral_client_key;
+            }
         }
 
-        public Tuple<byte[], byte[]> Hello(byte[] ephemeral_client_key)
+        /// <summary>
+        ///   Craft server response to client hello
+        /// </summary>
+        /// <returns>
+        ///   Returns the message ready to be sent, consisting of the server
+        ///   ephemeral key and an hmac of the server key signed with the
+        ///   network key.
+        /// </returns>
+        public byte[] Hello()
         {
-            _ephemeral_server_key = SecretKeyAuth.GenerateKey();
-            var signing_key = ScalarMult.Mult(ephemeral_client_key, _ephemeral_server_key);
-            var signed_key = SecretKeyAuth.Sign(_ephemeral_server_key, signing_key);
+            var msg = new byte[SECTION_LENGTH * 2];
 
-            return Tuple.Create(_ephemeral_server_key, signed_key);
+        }
+
+        /// <summary>
+        ///   Accepts
+        /// </summary>
+        public Tuple<byte[], byte[]> Accept(byte[] ephemeral_client_key)
+        {
+            var signing_key = ScalarMult.Mult(ephemeral_client_key, _ephemeral_server_pk);
+            var signed_key = SecretKeyAuth.Sign(_ephemeral_server_pk, signing_key);
+
+            return Tuple.Create(_ephemeral_server_pk, signed_key);
         }
 
         public byte[] Authenticate()
