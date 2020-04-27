@@ -19,6 +19,17 @@ using Sodium;
 
 namespace Scuttlebutt.Crypto.SHS
 {
+    static class Utils
+    {
+        public static T[] Concat<T>(this T[] x, T[] y)
+        {
+            var oldLen = x.Length;
+            Array.Resize<T>(ref x, x.Length + y.Length);
+            Array.Copy(y, 0, x, oldLen, y.Length);
+            return x;
+        }
+    }
+
     /// <summary>Handles the client protocol part of the SHS handshake</summary>
     public class Client
     {
@@ -134,14 +145,24 @@ namespace Scuttlebutt.Crypto.SHS
         }
 
         private const int SECTION_LENGTH = 32;
+
+        // Known network key
         private readonly byte[] _network_key;
+
+        // Server keys
         private KeyPair _ephemeral_server_keypair;
         private KeyPair _longterm_server_keypair;
+
+        // Client keys
         private byte[] _ephemeral_client_pk;
         private byte[] _longterm_client_pk;
+
+        // Shared secrets
         private byte[] _shared_ab;
         private byte[] _shared_aB;
         private byte[] _shared_Ab;
+
+        private byte[] detached_signature_A;
 
         /// <summary>
         ///   Constructs the server given the Network key and its keypair
@@ -246,9 +267,10 @@ namespace Scuttlebutt.Crypto.SHS
         }
 
         /// <summary>
-        ///   Checks for <paramref name="msg"/> length and validity, extrating
-        ///   client's long term public key upon success
+        ///   Checks for <paramref name="msg"/> length and validity, extracting
+        ///   the client's long term public key upon success.
         /// </summary>
+        /// <param name="msg">Client authenticate message</param>
         /// <exception cref="ArgumentException">
         ///   Thrown if the client Auth <paramref name="msg"/> fails to pass the
         ///   checks.
@@ -318,9 +340,55 @@ namespace Scuttlebutt.Crypto.SHS
             this.DeriveAb();
         }
 
+        /// <summary>
+        ///   Computes the message that accepts the handshake.
+        /// </summary>
+        /// <remark>
+        ///   Here the server computes a signature of the network key, the
+        ///   signature of the long term client's public key and a sha 256 of
+        ///   the shared ab secret. This is signed with the server's long term
+        ///   private key.
+        ///
+        ///   This signature is encrypted using a sha 256 of the network key
+        ///   and all of the derived secrets.
+        /// </remark>
+        /// <returns>
+        ///   A byte array of length 80 consisting of the message.
+        /// </returns>
         public byte[] Accept()
         {
-            return new byte[8];
+            var msg = new byte[80];
+            var to_sign = new byte[0];
+            var detached_signature = PublicKeyAuth.SignDetached(
+                to_sign
+                    .Concat(_network_key)
+                    .Concat(detached_signature_A)
+                    .Concat(_longterm_client_pk)
+                    .Concat(
+                        CryptoHash.Sha256(_shared_ab)
+                    ),
+                    _longterm_server_keypair.PublicKey
+            );
+
+            // A nonce consisting of 24 zeros
+            var nonce = new byte[24];
+            nonce.Initialize();
+
+            var to_hash = new byte[0];
+
+            SecretBox.CreateDetached(
+                detached_signature,
+                nonce,
+                CryptoHash.Sha256(
+                    to_hash
+                        .Concat(_network_key)
+                        .Concat(_shared_ab)
+                        .Concat(_shared_aB)
+                        .Concat(_shared_Ab)
+                )
+            );
+
+            return msg;
         }
 
         private void DeriveSecrets()
