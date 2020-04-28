@@ -19,14 +19,41 @@ using Sodium;
 
 namespace Scuttlebutt.Crypto.SHS
 {
-    static class Utils
+    internal static class Utils
     {
-        public static T[] Concat<T>(this T[] x, T[] y)
+        public static byte[] Concat(params byte[][] args)
         {
-            var oldLen = x.Length;
-            Array.Resize<T>(ref x, x.Length + y.Length);
-            Array.Copy(y, 0, x, oldLen, y.Length);
-            return x;
+            var total_length = 0;
+            var next_offset = 0;
+
+            foreach (var e in args)
+            {
+                total_length += e.Length;
+            }
+
+            var result = new byte[total_length];
+
+            for (int i = 0; i < args.Length; i++)
+            {
+                args[i].CopyTo(result, next_offset);
+                next_offset += args[i].Length;
+            }
+
+            return result;
+        }
+    }
+
+    internal class KeyPair
+    {
+        public byte[] PublicKey;
+        public byte[] PrivateKey;
+
+        public KeyPair(Sodium.KeyPair a)
+        {
+            this.PublicKey = PublicKeyAuth
+                .ConvertEd25519PublicKeyToCurve25519PublicKey(a.PublicKey);
+            this.PrivateKey = PublicKeyAuth
+                .ConvertEd25519SecretKeyToCurve25519SecretKey(a.PrivateKey);
         }
     }
 
@@ -76,12 +103,12 @@ namespace Scuttlebutt.Crypto.SHS
         private readonly byte[] _network_key;
 
         // Client keys
-        private KeyPair _ephemeral_client_keypair;
-        private KeyPair _longterm_client_keypair;
+        readonly private SHS.KeyPair _ephemeral_client_keypair;
+        readonly private Sodium.KeyPair _longterm_client_keypair;
 
         // Server keys
         private byte[] _ephemeral_server_pk;
-        private byte[] _longterm_server_pk;
+        readonly private byte[] _longterm_server_pk;
 
         // Shared secrets
         private byte[] _shared_ab;
@@ -104,10 +131,13 @@ namespace Scuttlebutt.Crypto.SHS
         /// <param name="client_keys">
         ///   The long term client key pair
         /// </param>
-        public Client(byte[] network_key, byte[] server_pk, KeyPair client_keys)
+        public Client(byte[] network_key, byte[] server_pk, Sodium.KeyPair client_keys)
         {
             this._network_key = network_key;
-            _ephemeral_client_keypair = PublicKeyAuth.GenerateKeyPair();
+
+            var ed_keypair =  PublicKeyAuth.GenerateKeyPair();
+            _ephemeral_client_keypair = new KeyPair(ed_keypair);
+
             _longterm_server_pk = server_pk;
             _longterm_client_keypair = client_keys;
         }
@@ -125,11 +155,13 @@ namespace Scuttlebutt.Crypto.SHS
         public byte[] Hello()
         {
             var signed_key = SecretKeyAuth.Sign(
-                _ephemeral_client_keypair.PrivateKey,
-                _network_key
+                this._ephemeral_client_keypair.PublicKey,
+                this._network_key
             );
 
-            var msg = new byte[SECTION_LENGTH * 2];
+            var msg = Utils.Concat(
+                signed_key, _ephemeral_client_keypair.PublicKey
+            );
 
             return msg;
         }
@@ -161,9 +193,9 @@ namespace Scuttlebutt.Crypto.SHS
 
             // Separate the message in ephemeral key and hmac
             var ephemeral_server_key = new byte[SECTION_LENGTH];
-            Buffer.BlockCopy(msg, 0, ephemeral_server_key, 0, SECTION_LENGTH);
+            Buffer.BlockCopy(msg, SECTION_LENGTH, ephemeral_server_key, 0, SECTION_LENGTH);
             var hmac = new byte[SECTION_LENGTH];
-            Buffer.BlockCopy(msg, SECTION_LENGTH, hmac, 0, SECTION_LENGTH);
+            Buffer.BlockCopy(msg, 0, hmac, 0, SECTION_LENGTH);
 
             // Check if the key used to sign the hmac of the ephemeral_client_key is
             // valid
@@ -200,36 +232,35 @@ namespace Scuttlebutt.Crypto.SHS
         /// </returns>
         public byte[] Authenticate()
         {
-            var hash_ab = CryptoHash.Hash(this._shared_ab);
+            var hash_ab = CryptoHash.Sha256(this._shared_ab);
 
             // Concatenate the network identifier, the server's public key and
             // the hash of the derived secret.
-            var to_sign = new byte[_network_key.Length + _longterm_server_pk.Length + hash_ab.Length];
-            _network_key.CopyTo(to_sign, 0);
-            _longterm_server_pk.CopyTo(to_sign, _network_key.Length);
-            hash_ab.CopyTo(to_sign, _longterm_server_pk.Length);
+            var to_sign = Utils.Concat(
+                _network_key, _longterm_server_pk, hash_ab
+            );
 
             // Sign the first portion of the message and save it in the object
             // state for later use in the server accept verification.
-            var signature = PublicKeyAuth.SignDetached(to_sign, _longterm_client_keypair.PrivateKey);
-            detached_signature_A = signature;
+            detached_signature_A = PublicKeyAuth.SignDetached(
+                to_sign, _longterm_client_keypair.PrivateKey
+            );
 
             // Create the plaintext message
-            var plaintext = new byte[_longterm_client_keypair.PublicKey.Length + signature.Length];
-            signature.CopyTo(plaintext, 0);
-            _longterm_client_keypair.PublicKey.CopyTo(plaintext, signature.Length);
+            var plaintext = Utils.Concat(
+                detached_signature_A, _longterm_client_keypair.PublicKey
+            );
 
             // Create the key from the network key and the shared secrets
-            var box_key = new byte[_network_key.Length + _shared_ab.Length + _shared_aB.Length];
-            _network_key.CopyTo(box_key, 0);
-            _shared_ab.CopyTo(box_key, _network_key.Length);
-            _shared_aB.CopyTo(box_key, _shared_ab.Length);
+            var box_key = Utils.Concat(
+                _network_key, _shared_ab, _shared_aB
+            );
 
             // A nonce consisting of 24 zeros
             var nonce = new byte[NONCE_SIZE];
             nonce.Initialize();
 
-            var msg = SecretBox.Create(plaintext, nonce, box_key);
+            var msg = SecretBox.Create(plaintext, nonce, CryptoHash.Sha256(box_key));
             return msg;
         }
 
@@ -261,26 +292,21 @@ namespace Scuttlebutt.Crypto.SHS
 
             // Concatenate the network key and derived secrets to obtain
             // the message key
-            var to_hash = new byte[0];
-            var msg_key = CryptoHash.Sha256(
-                to_hash
-                    .Concat(_network_key)
-                    .Concat(_shared_ab)
-                    .Concat(_shared_aB)
-                    .Concat(_shared_Ab)
+            var to_hash = Utils.Concat(
+                _network_key, _shared_ab, _shared_aB, _shared_Ab
             );
+
+            var msg_key = CryptoHash.Sha256(to_hash);
 
             var opened_msg = SecretBox.Open(msg, nonce, msg_key);
 
             // Compute the message that it is supposed to be signed with the
             // server's long term key
             var hashed = CryptoHash.Sha256(_shared_ab);
-            var msg_to_verify = new byte[0];
-            msg_to_verify
-                .Concat(_network_key)
-                .Concat(detached_signature_A)
-                .Concat(_longterm_client_keypair.PublicKey)
-                .Concat(hashed);
+            var msg_to_verify = Utils.Concat(
+                _network_key, detached_signature_A,
+                _longterm_client_keypair.PublicKey, hashed
+            );
 
             if ( !PublicKeyAuth.VerifyDetached(opened_msg, msg_to_verify, _longterm_server_pk) )
             {
@@ -306,8 +332,8 @@ namespace Scuttlebutt.Crypto.SHS
             );
 
             this._shared_aB = ScalarMult.Mult(
-                curve25519Sk,
-                _ephemeral_server_pk
+                this._ephemeral_client_keypair.PrivateKey,
+                curve25519Pk
             );
 
             this._shared_Ab = ScalarMult.Mult(
@@ -365,8 +391,8 @@ namespace Scuttlebutt.Crypto.SHS
         private readonly byte[] _network_key;
 
         // Server keys
-        private KeyPair _ephemeral_server_keypair;
-        private KeyPair _longterm_server_keypair;
+        readonly private SHS.KeyPair _ephemeral_server_keypair;
+        readonly private Sodium.KeyPair _longterm_server_keypair;
 
         // Client keys
         private byte[] _ephemeral_client_pk;
@@ -388,11 +414,12 @@ namespace Scuttlebutt.Crypto.SHS
         /// <param name="server_keypair">
         ///   The server's long term keypair
         /// </param>
-        Server(byte[] network_key, KeyPair server_keypair)
+        public Server(byte[] network_key, Sodium.KeyPair server_keypair)
         {
             this._network_key = network_key;
             this._longterm_server_keypair = server_keypair;
-            _ephemeral_server_keypair = PublicKeyAuth.GenerateKeyPair();
+
+            _ephemeral_server_keypair = new KeyPair(PublicKeyAuth.GenerateKeyPair());
         }
 
         /// <summary>
@@ -422,9 +449,9 @@ namespace Scuttlebutt.Crypto.SHS
 
             // Separate the message in ephemeral key and hmac
             var ephemeral_client_key = new byte[SECTION_LENGTH];
-            Buffer.BlockCopy(msg, 0, ephemeral_client_key, 0, SECTION_LENGTH);
+            Buffer.BlockCopy(msg, SECTION_LENGTH, ephemeral_client_key, 0, SECTION_LENGTH);
             var hmac = new byte[SECTION_LENGTH];
-            Buffer.BlockCopy(msg, SECTION_LENGTH, hmac, 0, SECTION_LENGTH);
+            Buffer.BlockCopy(msg, 0, hmac, 0, SECTION_LENGTH);
 
             // Check if the key used to sign the hmac of the ephemeral_client_key is
             // valid
@@ -454,28 +481,13 @@ namespace Scuttlebutt.Crypto.SHS
         /// </returns>
         public byte[] Hello()
         {
-            var msg = new byte[SECTION_LENGTH * 2];
-
-            var hmac = PublicKeyAuth.SignDetached(
+            var hmac = SecretKeyAuth.Sign(
                 _ephemeral_server_keypair.PublicKey,
                 _network_key
             );
 
-            // Copy hmac into first 32 bytes of the msg
-            Buffer.BlockCopy(
-                hmac,
-                0,
-                msg,
-                0,
-                SECTION_LENGTH
-            );
-            // Copy server's ephemeral public key into last 32 bytes of the msg
-            Buffer.BlockCopy(
-                _ephemeral_server_keypair.PublicKey,
-                0,
-                msg,
-                SECTION_LENGTH,
-                SECTION_LENGTH
+            var msg = Utils.Concat(
+                hmac, _ephemeral_server_keypair.PublicKey
             );
 
             return msg;
@@ -501,17 +513,14 @@ namespace Scuttlebutt.Crypto.SHS
             var nonce = new byte[NONCE_SIZE];
             nonce.Initialize();
 
-            // Concatenate the Network and derived keys
-            var LEN = _network_key.Length +
-                _shared_ab.Length +
-                _shared_aB.Length;
-            var to_hash = new byte[LEN];
-            _network_key.CopyTo(to_hash, 0);
-            _shared_ab.CopyTo(to_hash, _network_key.Length);
-            _shared_aB.CopyTo(to_hash, _shared_ab.Length);
-
             // Calculate the decryption key from the dervided keys
-            var key = CryptoHash.Sha256(to_hash);
+            var key = CryptoHash.Sha256(
+                Utils.Concat(
+                    _network_key,
+                    _shared_ab,
+                    _shared_aB
+                )
+            );
 
             var opened_msg = SecretBox.Open(msg, nonce, key);
 
@@ -530,14 +539,12 @@ namespace Scuttlebutt.Crypto.SHS
             Buffer.BlockCopy(opened_msg, SIG_SIZE, lt_cli_pk, 0, PUB_KEY_SIZE);
 
             var shared_hashed = CryptoHash.Sha256(_shared_ab);
-            var VER_SIZE = _network_key.Length + _longterm_server_keypair.PublicKey.Length + shared_hashed.Length;
             // Concat network_key, server longterm pk and sha256 hashed shared_ab secret
-            var to_verify = new byte[VER_SIZE];
-            _network_key.CopyTo(to_verify, 0);
-            _longterm_server_keypair.PublicKey.CopyTo(to_verify, _network_key.Length);
-            shared_hashed.CopyTo(to_verify, _longterm_server_keypair.PublicKey.Length);
+            var to_verify = Utils.Concat(
+                _network_key, _longterm_server_keypair.PublicKey, shared_hashed
+            );
 
-            if ( !SecretKeyAuth.Verify(to_verify, detached_signature, lt_cli_pk) )
+            if (!SecretKeyAuth.Verify(to_verify, detached_signature, lt_cli_pk))
             {
                 throw new ArgumentException("Signature does not match");
             }
@@ -565,34 +572,29 @@ namespace Scuttlebutt.Crypto.SHS
         public byte[] Accept()
         {
             var msg = new byte[80];
-            var to_sign = new byte[0];
+
             var detached_signature = PublicKeyAuth.SignDetached(
-                to_sign
-                    .Concat(_network_key)
-                    .Concat(detached_signature_A)
-                    .Concat(_longterm_client_pk)
-                    .Concat(
-                        CryptoHash.Sha256(_shared_ab)
-                    ),
-                    _longterm_server_keypair.PublicKey
+                Utils.Concat(
+                    _network_key,
+                    detached_signature_A,
+                    _longterm_client_pk,
+                    CryptoHash.Sha256(_shared_ab)
+                ),
+                _longterm_server_keypair.PublicKey
             );
 
             // A nonce consisting of 24 zeros
             var nonce = new byte[NONCE_SIZE];
             nonce.Initialize();
 
-            var to_hash = new byte[0];
+            var to_hash = Utils.Concat(
+                _network_key, _shared_ab, _shared_aB, _shared_Ab
+            );
 
             SecretBox.CreateDetached(
                 detached_signature,
                 nonce,
-                CryptoHash.Sha256(
-                    to_hash
-                        .Concat(_network_key)
-                        .Concat(_shared_ab)
-                        .Concat(_shared_aB)
-                        .Concat(_shared_Ab)
-                )
+                CryptoHash.Sha256(to_hash)
             );
 
             return msg;
