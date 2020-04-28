@@ -35,6 +35,40 @@ namespace Scuttlebutt.Crypto.SHS
     /// </summary>
     public class Client
     {
+        /// <summary>
+        ///   The secret derived from the ephemeral keys (ab).
+        /// </summary>
+        public byte[] EphemeralDerivedSecret
+        {
+            get
+            {
+                return _shared_ab;
+            }
+        }
+        /// <summary>
+        ///   The secret derived from the client ephemeral key and the server's
+        ///   long term key (aB).
+        /// </summary>
+        public byte[] ServerDerivedSecret
+        {
+            get
+            {
+                return _shared_aB;
+            }
+        }
+        /// <summary>
+        ///   The secret derived from the client long term key and the server's
+        ///   ephemeral key (Ab).
+        /// </summary>
+        public byte[] ClientDerivedSecret
+        {
+            get
+            {
+                return _shared_Ab;
+            }
+        }
+
+        // Constants
         private const int SECTION_LENGTH = 32;
         private const int NONCE_SIZE = 24;
 
@@ -79,9 +113,15 @@ namespace Scuttlebutt.Crypto.SHS
         }
 
         /// <summary>
-        /// Produces an ephemeral key and its signed version using the
-        /// network key
+        ///   Crafts the client's hello message.
         /// </summary>
+        /// <remark>
+        ///   Signs the ephemeral public key with the network key and appends
+        ///   that key.
+        /// </remark>
+        /// <returns>
+        ///   The message to be sent
+        /// </returns>
         public byte[] Hello()
         {
             var signed_key = SecretKeyAuth.Sign(
@@ -283,26 +323,39 @@ namespace Scuttlebutt.Crypto.SHS
     public class Server
     {
         /// <summary>
-        ///   The server's epehemeral key
+        ///   The secret derived from the ephemeral keys (ab).
         /// </summary>
-        public byte[] EphemeralServerKey
+        public byte[] EphemeralDerivedSecret
         {
             get
             {
-                return _ephemeral_server_keypair.PublicKey;
+                return _shared_ab;
             }
         }
         /// <summary>
-        ///   The client's epehemeral key
+        ///   The secret derived from the client ephemeral key and the server's
+        ///   long term key (aB).
         /// </summary>
-        public byte[] EphemeralClientKey
+        public byte[] ServerDerivedSecret
         {
             get
             {
-                return _ephemeral_client_pk;
+                return _shared_aB;
+            }
+        }
+        /// <summary>
+        ///   The secret derived from the client long term key and the server's
+        ///   ephemeral key (Ab).
+        /// </summary>
+        public byte[] ClientDerivedSecret
+        {
+            get
+            {
+                return _shared_Ab;
             }
         }
 
+        // Constants
         private const int SECTION_LENGTH = 32;
         private const int SIG_SIZE = 64;
         private const int PUB_KEY_SIZE = 32;
