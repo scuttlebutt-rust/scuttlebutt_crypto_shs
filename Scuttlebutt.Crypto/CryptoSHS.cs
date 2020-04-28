@@ -30,25 +30,52 @@ namespace Scuttlebutt.Crypto.SHS
         }
     }
 
-    /// <summary>Handles the client protocol part of the SHS handshake</summary>
+    /// <summary>
+    ///   Handles the client protocol part of the SHS handshake
+    /// </summary>
     public class Client
     {
         private const int SECTION_LENGTH = 32;
+        private const int NONCE_SIZE = 24;
+
+        // Known network key
         private readonly byte[] _network_key;
+
+        // Client keys
         private KeyPair _ephemeral_client_keypair;
         private KeyPair _longterm_client_keypair;
+
+        // Server keys
         private byte[] _ephemeral_server_pk;
+        private byte[] _longterm_server_pk;
+
+        // Shared secrets
         private byte[] _shared_ab;
         private byte[] _shared_aB;
+        private byte[] _shared_Ab;
 
-        /// <summary>Constructs the client given</summary>
+        // Detached signature to verify handshake
+        private byte[] detached_signature_A;
+
+
+        /// <summary>
+        ///   Constructs the client given
+        /// </summary>
         /// <param name="network_key">
-        /// The key that identifies the network
+        ///   The key that identifies the network
         /// </param>
-        Client(byte[] network_key)
+        /// <param name="server_pk">
+        ///   The long term server public key
+        /// </param>
+        /// <param name="client_keys">
+        ///   The long term client key pair
+        /// </param>
+        Client(byte[] network_key, byte[] server_pk, KeyPair client_keys)
         {
             this._network_key = network_key;
             _ephemeral_client_keypair = PublicKeyAuth.GenerateKeyPair();
+            _longterm_server_pk = server_pk;
+            _longterm_client_keypair = client_keys;
         }
 
         /// <summary>
@@ -67,39 +94,158 @@ namespace Scuttlebutt.Crypto.SHS
             return msg;
         }
 
-        public Tuple<byte[], byte[]> Authenticate(
-            byte[] server_pub_key,
-            byte[] server_eph_key,
-            byte[] long_term_pub_key,
-            byte[] long_term_priv_key
-        )
+        /// <summary>
+        ///   Validate server Hello and extract ephemeral key
+        /// </summary>
+        /// <remark>
+        ///   Here the client verifies that the received message length is 64
+        ///   bytes, then extracts the server's ephemeral key and also verifies
+        ///   that the hmac was signed with the network key.
+        ///
+        ///   This sets the object's <see cref="_ephemeral_server_pk"/>
+        /// </remark>
+        /// <exception cref="ArgumentException">
+        ///   Thrown if the client Hello <paramref name="msg"/> fails to pass the
+        ///   checks.
+        /// </exception>
+        /// <param name="msg">
+        ///   The received message, the first 32 bytes correspond to the client
+        ///   ephemeral key and the last 32 bytes to the hmac.
+        /// </param>
+        public void AcceptHello(byte[] msg)
         {
-            var a_b = ScalarMult.Mult(_ephemeral_client_keypair.PrivateKey, server_eph_key);
-            var hash_a_b = CryptoHash.Hash(a_b);
+            if (msg.Length != 64)
+            {
+                throw new ArgumentException("The received message is not 64 bytes");
+            }
 
-            var to_hash = new byte[_network_key.Length + server_pub_key.Length + hash_a_b.Length];
-                _network_key.CopyTo(to_hash, 0);
-                server_pub_key.CopyTo(to_hash, _network_key.Length);
-                hash_a_b.CopyTo(to_hash, server_pub_key.Length);
+            // Separate the message in ephemeral key and hmac
+            var ephemeral_server_key = new byte[SECTION_LENGTH];
+            Buffer.BlockCopy(msg, 0, ephemeral_server_key, 0, SECTION_LENGTH);
+            var hmac = new byte[SECTION_LENGTH];
+            Buffer.BlockCopy(msg, SECTION_LENGTH, hmac, 0, SECTION_LENGTH);
 
-            var signed = PublicKeyAuth.SignDetached(to_hash, long_term_priv_key);
-            var h = new byte[long_term_pub_key.Length + signed.Length];
-                long_term_pub_key.CopyTo(h, 0);
-                signed.CopyTo(h, long_term_pub_key.Length);
+            // Check if the key used to sign the hmac of the ephemeral_client_key is
+            // valid
+            //
+            // Aka, check if we are in the same network
+            if (!SecretKeyAuth.Verify(ephemeral_server_key, hmac, _network_key))
+            {
+                throw new ArgumentException("The hmac does not match");
+            }
+            else
+            {
+                this._ephemeral_server_pk = ephemeral_server_key;
+            }
 
-            var a_B = ScalarMult.Mult(_ephemeral_client_keypair.PrivateKey, server_pub_key);
-            var A_b = ScalarMult.Mult(_ephemeral_client_keypair.PrivateKey, server_pub_key);
+            // Now that we have the server's ephemeral public key we can derive
+            // the secret
+            this.DeriveSecrets();
+        }
 
-            var shared_secret = new byte[_network_key.Length + a_b.Length + a_B.Length + A_b.Length];
-            var box_key = new byte[_network_key.Length + a_b.Length + a_B.Length];
-                _network_key.CopyTo(box_key, 0);
-                a_b.CopyTo(box_key, _network_key.Length);
-                a_B.CopyTo(box_key, a_b.Length);
-                box_key.CopyTo(shared_secret, 0);
-                A_b.CopyTo(shared_secret, box_key.Length);
+        /// <summary>
+        ///   Crafts the client Authenticate message
+        /// </summary>
+        /// <remark>
+        ///   Consists of a signature of the network identifier, the server's
+        ///   long term public key and a sha 256 of the derived secret ab,
+        ///   concatenated with the client's long term public key. All
+        ///   encrypted using the network identifier and the derived secrets
+        ///   ab and aB.
+        ///
+        ///   This sets the object's <see cref="detached_signature_A"/>
+        /// </remark>
+        /// <returns>
+        ///   The client Authenticate message
+        /// </returns>
+        public byte[] Authenticate()
+        {
+            var hash_ab = CryptoHash.Hash(this._shared_ab);
 
-            var msg = SecretBox.Create(h, SecretBox.GenerateNonce(), box_key);
-            return Tuple.Create(shared_secret, msg);
+            // Concatenate the network identifier, the server's public key and
+            // the hash of the derived secret.
+            var to_sign = new byte[_network_key.Length + _longterm_server_pk.Length + hash_ab.Length];
+            _network_key.CopyTo(to_sign, 0);
+            _longterm_server_pk.CopyTo(to_sign, _network_key.Length);
+            hash_ab.CopyTo(to_sign, _longterm_server_pk.Length);
+
+            // Sign the first portion of the message and save it in the object
+            // state for later use in the server accept verification.
+            var signature = PublicKeyAuth.SignDetached(to_sign, _longterm_client_keypair.PrivateKey);
+            detached_signature_A = signature;
+
+            // Create the plaintext message
+            var plaintext = new byte[_longterm_client_keypair.PublicKey.Length + signature.Length];
+            signature.CopyTo(plaintext, 0);
+            _longterm_client_keypair.PublicKey.CopyTo(plaintext, signature.Length);
+
+            // Create the key from the network key and the shared secrets
+            var box_key = new byte[_network_key.Length + _shared_ab.Length + _shared_aB.Length];
+            _network_key.CopyTo(box_key, 0);
+            _shared_ab.CopyTo(box_key, _network_key.Length);
+            _shared_aB.CopyTo(box_key, _shared_ab.Length);
+
+            // A nonce consisting of 24 zeros
+            var nonce = new byte[NONCE_SIZE];
+            nonce.Initialize();
+
+            var msg = SecretBox.Create(plaintext, nonce, box_key);
+            return msg;
+        }
+
+        /// <summary>
+        ///   Validates server acceptance message
+        /// </summary>
+        /// <remark>
+        ///   Here the client verifies that the received message length is 80
+        ///   bytes, then opens the encrypted box and verifies that the sent
+        ///   message is server's signature to the derived shared secrets. With
+        ///   this the handshake concludes.
+        /// </remark>
+        /// <exception cref="ArgumentException">
+        ///   Thrown if the server's Accept <paramref name="msg"/> is not the
+        ///   correct size or the signature is not valid.
+        /// </exception>
+        /// <param name="msg">
+        ///   The received message, encrypted server's signature.
+        /// </param>
+        public void VerifyAccept(byte[] msg)
+        {
+            if ( msg.Length != 80 )
+            {
+                throw new ArgumentException("Incorrect message size");
+            }
+
+            var nonce = new byte[NONCE_SIZE];
+            nonce.Initialize();
+
+            // Concatenate the network key and derived secrets to obtain
+            // the message key
+            var to_hash = new byte[0];
+            var msg_key = CryptoHash.Sha256(
+                to_hash
+                    .Concat(_network_key)
+                    .Concat(_shared_ab)
+                    .Concat(_shared_aB)
+                    .Concat(_shared_Ab)
+            );
+
+            var opened_msg = SecretBox.Open(msg, nonce, msg_key);
+
+            // Compute the message that it is supposed to be signed with the
+            // server's long term key
+            var hashed = CryptoHash.Sha256(_shared_ab);
+            var msg_to_verify = new byte[0];
+            msg_to_verify
+                .Concat(_network_key)
+                .Concat(detached_signature_A)
+                .Concat(_longterm_client_keypair.PublicKey)
+                .Concat(hashed);
+
+            if ( !PublicKeyAuth.VerifyDetached(opened_msg, msg_to_verify, _longterm_server_pk) )
+            {
+                throw new ArgumentException("Invalid signature");
+            }
         }
 
         private void DeriveSecrets()
@@ -107,6 +253,11 @@ namespace Scuttlebutt.Crypto.SHS
             var curve25519Sk = PublicKeyAuth
                 .ConvertEd25519SecretKeyToCurve25519SecretKey(
                     this._longterm_client_keypair.PrivateKey
+                );
+
+            var curve25519Pk = PublicKeyAuth
+                .ConvertEd25519PublicKeyToCurve25519PublicKey(
+                    _longterm_server_pk
                 );
 
             this._shared_ab = ScalarMult.Mult(
@@ -118,9 +269,17 @@ namespace Scuttlebutt.Crypto.SHS
                 curve25519Sk,
                 _ephemeral_server_pk
             );
+
+            this._shared_Ab = ScalarMult.Mult(
+                curve25519Sk,
+                _ephemeral_server_pk
+            );
         }
     }
 
+    /// <summary>
+    ///   Handles the server side of the SHS handshake
+    /// </summary>
     public class Server
     {
         /// <summary>
@@ -145,6 +304,9 @@ namespace Scuttlebutt.Crypto.SHS
         }
 
         private const int SECTION_LENGTH = 32;
+        private const int SIG_SIZE = 64;
+        private const int PUB_KEY_SIZE = 32;
+        private const int NONCE_SIZE = 24;
 
         // Known network key
         private readonly byte[] _network_key;
@@ -188,7 +350,7 @@ namespace Scuttlebutt.Crypto.SHS
         ///   bytes, then extracts the client's ephemeral key and also verifies
         ///   that the hmac was signed with the network key.
         ///
-        ///   This sets the object's <see cref="EphemeralClientKey"/>
+        ///   This sets the object's <see cref="_ephemeral_client_pk"/>
         /// </remark>
         /// <exception cref="ArgumentException">
         ///   Thrown if the client Hello <paramref name="msg"/> fails to pass the
@@ -209,7 +371,7 @@ namespace Scuttlebutt.Crypto.SHS
             var ephemeral_client_key = new byte[SECTION_LENGTH];
             Buffer.BlockCopy(msg, 0, ephemeral_client_key, 0, SECTION_LENGTH);
             var hmac = new byte[SECTION_LENGTH];
-            Buffer.BlockCopy(msg, 0, hmac, 0, SECTION_LENGTH);
+            Buffer.BlockCopy(msg, SECTION_LENGTH, hmac, 0, SECTION_LENGTH);
 
             // Check if the key used to sign the hmac of the ephemeral_client_key is
             // valid
@@ -225,7 +387,7 @@ namespace Scuttlebutt.Crypto.SHS
             }
 
             // Now that we have the client's ephemeral public key we can derive
-            // the secret
+            // the first 2 secrets
             this.DeriveSecrets();
         }
 
@@ -277,7 +439,6 @@ namespace Scuttlebutt.Crypto.SHS
         /// </exception>
         public void AcceptAuth(byte[] msg)
         {
-            var NONCE_SIZE = 24;
 
             if ( msg.Length != 112 ) {
                 throw new ArgumentException("Incorrect secretbox length");
@@ -299,20 +460,12 @@ namespace Scuttlebutt.Crypto.SHS
             // Calculate the decryption key from the dervided keys
             var key = CryptoHash.Sha256(to_hash);
 
-            var opened_msg = SecretBox.Open(
-                msg,
-                nonce,
-                key
-            );
+            var opened_msg = SecretBox.Open(msg, nonce, key);
 
             if ( opened_msg.Length != 96 )
             {
                 throw new ArgumentException("Invalid size of opened message");
             }
-
-            // TODO: Extract signature size to const
-            var SIG_SIZE = 64;
-            var PUB_KEY_SIZE = 32;
 
             // Extract the signature of the long term client's public key
             // signed with the derived secret
@@ -336,6 +489,7 @@ namespace Scuttlebutt.Crypto.SHS
                 throw new ArgumentException("Signature does not match");
             }
 
+            detached_signature_A = detached_signature;
             _longterm_client_pk = lt_cli_pk;
             this.DeriveAb();
         }
@@ -371,7 +525,7 @@ namespace Scuttlebutt.Crypto.SHS
             );
 
             // A nonce consisting of 24 zeros
-            var nonce = new byte[24];
+            var nonce = new byte[NONCE_SIZE];
             nonce.Initialize();
 
             var to_hash = new byte[0];
@@ -411,14 +565,14 @@ namespace Scuttlebutt.Crypto.SHS
 
         private void DeriveAb()
         {
-            var curve25519Sk = PublicKeyAuth
-                .ConvertEd25519SecretKeyToCurve25519SecretKey(
+            var curve25519Pk = PublicKeyAuth
+                .ConvertEd25519PublicKeyToCurve25519PublicKey(
                     this._longterm_client_pk
                 );
 
             this._shared_Ab = ScalarMult.Mult(
                 this._ephemeral_server_keypair.PublicKey,
-                curve25519Sk
+                curve25519Pk
             );
         }
     }
