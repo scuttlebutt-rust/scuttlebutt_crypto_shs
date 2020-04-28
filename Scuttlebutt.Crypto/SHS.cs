@@ -104,7 +104,7 @@ namespace Scuttlebutt.Crypto.SHS
         /// <param name="client_keys">
         ///   The long term client key pair
         /// </param>
-        Client(byte[] network_key, byte[] server_pk, KeyPair client_keys)
+        public Client(byte[] network_key, byte[] server_pk, KeyPair client_keys)
         {
             this._network_key = network_key;
             _ephemeral_client_keypair = PublicKeyAuth.GenerateKeyPair();
