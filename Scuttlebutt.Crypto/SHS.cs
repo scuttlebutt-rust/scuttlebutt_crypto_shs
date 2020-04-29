@@ -515,11 +515,7 @@ namespace Scuttlebutt.Crypto.SHS
 
             // Calculate the decryption key from the dervided keys
             var key = CryptoHash.Sha256(
-                Utils.Concat(
-                    _network_key,
-                    _shared_ab,
-                    _shared_aB
-                )
+                Utils.Concat(_network_key, _shared_ab, _shared_aB)
             );
 
             var opened_msg = SecretBox.Open(msg, nonce, key);
@@ -544,7 +540,7 @@ namespace Scuttlebutt.Crypto.SHS
                 _network_key, _longterm_server_keypair.PublicKey, shared_hashed
             );
 
-            if (!SecretKeyAuth.Verify(to_verify, detached_signature, lt_cli_pk))
+            if (!PublicKeyAuth.VerifyDetached(detached_signature, to_verify, lt_cli_pk))
             {
                 throw new ArgumentException("Signature does not match");
             }
