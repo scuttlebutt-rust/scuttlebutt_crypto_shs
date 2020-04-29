@@ -1,6 +1,6 @@
 # Description
 This is an implementation of the Secret Handshake protocol as described in the
-[https://ssbc.github.io/scuttlebutt-protocol-guide/#handshake](scuttlebutt protocol guide)
+[scuttlebutt protocol guide](https://ssbc.github.io/scuttlebutt-protocol-guide/#handshake)
 
 # Sample usage
 ```cs
