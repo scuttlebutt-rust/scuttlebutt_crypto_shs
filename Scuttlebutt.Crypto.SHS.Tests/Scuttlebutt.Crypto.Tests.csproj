@@ -14,7 +14,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\Scuttlebutt.Crypto\Scuttlebutt.Crypto.csproj" />
+    <ProjectReference Include="..\Scuttlebutt.Crypto.SHS\Scuttlebutt.Crypto.SHS.csproj" />
   </ItemGroup>
 
 </Project>
