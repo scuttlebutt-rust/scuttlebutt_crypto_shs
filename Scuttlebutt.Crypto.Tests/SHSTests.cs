@@ -1,4 +1,4 @@
-using System;
+using System.Linq;
 using Xunit;
 using Scuttlebutt.Crypto.SHS;
 using Sodium;
@@ -45,17 +45,39 @@ namespace Scuttlebutt.Crypto.Tests
             var server_hello = server.Hello();
             client.AcceptHello(server_hello);
 
+            Assert.True(
+                Enumerable.SequenceEqual(client.EphemeralDerivedSecret, server.EphemeralDerivedSecret),
+                "The ephemeral derived secrets are not the same" +
+                "client: " +
+                $"{string.Join(" ", client.EphemeralDerivedSecret.Select(x => x.ToString()).ToArray())}\n" +
+                "server: " +
+                $"{string.Join(" ", server.EphemeralDerivedSecret.Select(x => x.ToString()).ToArray())}"
+            );
+            Assert.True(
+                Enumerable.SequenceEqual(client.ServerDerivedSecret, server.ServerDerivedSecret),
+                "The Server derived secrets are not the same\n" +
+                "client: " +
+                $"{string.Join(" ", client.ServerDerivedSecret.Select(x => x.ToString()).ToArray())}\n" +
+                "server: " +
+                $"{string.Join(" ", server.ServerDerivedSecret.Select(x => x.ToString()).ToArray())}"
+            );
+
             // Client -> Server [3]
             var client_auth = client.Authenticate();
             server.AcceptAuth(client_auth);
 
+            Assert.True(
+                Enumerable.SequenceEqual(client.ClientDerivedSecret, server.ClientDerivedSecret),
+                "The Client derived secrets are not the same\n" +
+                "client: " +
+                $"{string.Join(" ", client.ClientDerivedSecret.Select(x => x.ToString()).ToArray())}\n" +
+                "server: " +
+                $"{string.Join(" ", server.ClientDerivedSecret.Select(x => x.ToString()).ToArray())}"
+            );
+
             // Client <- Server [4]
             var server_accept = server.Accept();
             client.VerifyAccept(server_accept);
-
-            client.ClientDerivedSecret.Equals(server.ClientDerivedSecret);
-            client.ServerDerivedSecret.Equals(server.ServerDerivedSecret);
-            client.EphemeralDerivedSecret.Equals(server.EphemeralDerivedSecret);
         }
     }
 }

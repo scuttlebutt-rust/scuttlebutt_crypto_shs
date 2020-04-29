@@ -292,13 +292,11 @@ namespace Scuttlebutt.Crypto.SHS
 
             // Concatenate the network key and derived secrets to obtain
             // the message key
-            var to_hash = Utils.Concat(
-                _network_key, _shared_ab, _shared_aB, _shared_Ab
+            var key = CryptoHash.Sha256(
+                Utils.Concat(_network_key, _shared_ab, _shared_aB, _shared_Ab)
             );
 
-            var msg_key = CryptoHash.Sha256(to_hash);
-
-            var opened_msg = SecretBox.Open(msg, nonce, msg_key);
+            var opened_msg = SecretBox.Open(msg, nonce, key);
 
             // Compute the message that it is supposed to be signed with the
             // server's long term key
@@ -567,8 +565,6 @@ namespace Scuttlebutt.Crypto.SHS
         /// </returns>
         public byte[] Accept()
         {
-            var msg = new byte[80];
-
             var detached_signature = PublicKeyAuth.SignDetached(
                 Utils.Concat(
                     _network_key,
@@ -576,22 +572,18 @@ namespace Scuttlebutt.Crypto.SHS
                     _longterm_client_pk,
                     CryptoHash.Sha256(_shared_ab)
                 ),
-                _longterm_server_keypair.PublicKey
+                _longterm_server_keypair.PrivateKey
             );
 
             // A nonce consisting of 24 zeros
             var nonce = new byte[NONCE_SIZE];
             nonce.Initialize();
 
-            var to_hash = Utils.Concat(
-                _network_key, _shared_ab, _shared_aB, _shared_Ab
+            var key = CryptoHash.Sha256(
+                Utils.Concat(_network_key, _shared_ab, _shared_aB, _shared_Ab)
             );
 
-            SecretBox.CreateDetached(
-                detached_signature,
-                nonce,
-                CryptoHash.Sha256(to_hash)
-            );
+            var msg = SecretBox.Create(detached_signature, nonce, key);
 
             return msg;
         }
@@ -622,7 +614,7 @@ namespace Scuttlebutt.Crypto.SHS
                 );
 
             this._shared_Ab = ScalarMult.Mult(
-                this._ephemeral_server_keypair.PublicKey,
+                this._ephemeral_server_keypair.PrivateKey,
                 curve25519Pk
             );
         }
