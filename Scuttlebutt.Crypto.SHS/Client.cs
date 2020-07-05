@@ -48,6 +48,22 @@ namespace Scuttlebutt.Crypto.SHS
             get { return _shared_Ab; }
         }
 
+        /// <summary>
+        ///   The generated ephemeral key
+        /// </summary>
+        public byte[] ClientEphemeralPubKey
+        {
+            get { return _ephemeral_client_keypair.PublicKey; }
+        }
+
+        /// <summary>
+        ///   The server's sent ephemeral key
+        /// </summary>
+        public byte[] ServerEphemeralPubKey
+        {
+            get { return _ephemeral_server_pk; }
+        }
+
         // Constants
         private const int SECTION_LENGTH = 32;
         private const int NONCE_SIZE = 24;
@@ -98,10 +114,10 @@ namespace Scuttlebutt.Crypto.SHS
         /// <summary>
         ///   Crafts the client's hello message.
         /// </summary>
-        /// <remark>
+        /// <remarks>
         ///   Signs the ephemeral public key with the network key and appends
         ///   that key.
-        /// </remark>
+        /// </remarks>
         /// <returns>
         ///   The message to be sent
         /// </returns>
@@ -122,13 +138,13 @@ namespace Scuttlebutt.Crypto.SHS
         /// <summary>
         ///   Validate server Hello and extract ephemeral key
         /// </summary>
-        /// <remark>
+        /// <remarks>
         ///   Here the client verifies that the received message length is 64
         ///   bytes, then extracts the server's ephemeral key and also verifies
         ///   that the hmac was signed with the network key.
         ///
         ///   This sets the object's <see cref="_ephemeral_server_pk"/>
-        /// </remark>
+        /// </remarks>
         /// <exception cref="ArgumentException">
         ///   Thrown if the client Hello <paramref name="msg"/> fails to pass the
         ///   checks.
@@ -171,7 +187,7 @@ namespace Scuttlebutt.Crypto.SHS
         /// <summary>
         ///   Crafts the client Authenticate message
         /// </summary>
-        /// <remark>
+        /// <remarks>
         ///   Consists of a signature of the network identifier, the server's
         ///   long term public key and a sha 256 of the derived secret ab,
         ///   concatenated with the client's long term public key. All
@@ -179,7 +195,7 @@ namespace Scuttlebutt.Crypto.SHS
         ///   ab and aB.
         ///
         ///   This sets the object's <see cref="detached_signature_A"/>
-        /// </remark>
+        /// </remarks>
         /// <returns>
         ///   The client Authenticate message
         /// </returns>
@@ -220,12 +236,12 @@ namespace Scuttlebutt.Crypto.SHS
         /// <summary>
         ///   Validates server acceptance message
         /// </summary>
-        /// <remark>
+        /// <remarks>
         ///   Here the client verifies that the received message length is 80
         ///   bytes, then opens the encrypted box and verifies that the sent
         ///   message is server's signature to the derived shared secrets. With
         ///   this the handshake concludes.
-        /// </remark>
+        /// </remarks>
         /// <exception cref="ArgumentException">
         ///   Thrown if the server's Accept <paramref name="msg"/> is not the
         ///   correct size or the signature is not valid.

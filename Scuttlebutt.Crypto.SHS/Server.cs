@@ -48,6 +48,22 @@ namespace Scuttlebutt.Crypto.SHS
             get { return _shared_Ab; }
         }
 
+        /// <summary>
+        ///   The client's sent ephemeral key
+        /// </summary>
+        public byte[] ClientEphemeralPubKey
+        {
+            get { return _ephemeral_client_pk; }
+        }
+
+        /// <summary>
+        ///   The generated ephemeral key
+        /// </summary>
+        public byte[] ServerEphemeralPubKey
+        {
+            get { return _ephemeral_server_keypair.PublicKey; }
+        }
+
         // Constants
         private const int SECTION_LENGTH = 32;
         private const int SIG_SIZE = 64;
@@ -92,13 +108,13 @@ namespace Scuttlebutt.Crypto.SHS
         /// <summary>
         ///   Validate client Hello
         /// </summary>
-        /// <remark>
+        /// <remarks>
         ///   Here the server verifies that the received message length is 64
         ///   bytes, then extracts the client's ephemeral key and also verifies
         ///   that the hmac was signed with the network key.
         ///
         ///   This sets the object's <see cref="_ephemeral_client_pk"/>
-        /// </remark>
+        /// </remarks>
         /// <exception cref="ArgumentException">
         ///   Thrown if the client Hello <paramref name="msg"/> fails to pass the
         ///   checks.
@@ -220,7 +236,7 @@ namespace Scuttlebutt.Crypto.SHS
         /// <summary>
         ///   Computes the message that accepts the handshake.
         /// </summary>
-        /// <remark>
+        /// <remarks>
         ///   Here the server computes a signature of the network key, the
         ///   signature of the long term client's public key and a sha 256 of
         ///   the shared ab secret. This is signed with the server's long term
@@ -228,7 +244,7 @@ namespace Scuttlebutt.Crypto.SHS
         ///
         ///   This signature is encrypted using a sha 256 of the network key
         ///   and all of the derived secrets.
-        /// </remark>
+        /// </remarks>
         /// <returns>
         ///   A byte array of length 80 consisting of the message.
         /// </returns>
